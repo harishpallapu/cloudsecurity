@@ -1,0 +1,145 @@
+import com.cloudbees.hudson.plugins.modeling.*
+pipeline {
+    agent any
+
+    tools {
+        // Install the Maven version configured as "M3" and add it to the path.
+        maven "M2_HOME"
+    }
+    stages {
+            stage('load parameters') { 
+            steps {
+                load "parameters.groovy"
+            }
+        }	
+        stage('SAST Analysis') {
+            steps {
+                script {
+                    try {
+                // Get some code from a GitHub repository
+						if (env.SAST_GIT_URL != 'null') {				
+                git "${env.SAST_GIT_URL}"
+                bat "git clone https://github.com/harishpallapu/sonarqube_scannar_windows.git"
+                bat "./sonarqube_scannar_windows/sonar-scanner-4.6.2.2472-windows/bin/sonar-scanner.bat"
+					        } else {
+                                                        echo "skipping the stage ${env.STAGE_NAME}.............................!"				
+                   } } catch (err) {
+							echo err.getMessage()
+							unstable(message: "${STAGE_NAME} is unstable")
+							echo "Error detected, ${env.STAGE_NAME} failed...............!"
+						}                
+                // Run Maven on a Unix agent.
+                //sh "mvn -Dmaven.test.failure.ignore=true clean package"
+            }
+        } 
+        }
+        stage('SCA') {
+            steps {
+			      script {
+						try {
+							bat '''
+							wget https://github.com/jeremylong/DependencyCheck/releases/download/v6.2.2/dependency-check-6.2.2-release.zip
+							 PowerShell Expand-Archive -Path "dependency-check-6.2.2-release.zip"  
+							./dependency-check-6.2.2-release/dependency-check/bin/dependency-check.bat --noupdate --project "TeachersFCU" --scan "Shoppingcart/lib/" --format HTML --out .
+						    '''
+						} catch (err) {
+							echo err.getMessage()
+							unstable(message: "${STAGE_NAME} is unstable")
+							echo "Error detected, ${env.STAGE_NAME} failed..................!"
+						}
+				}
+
+	    }
+        }
+	stage('build') {
+            steps {
+				script {
+						try {
+						if (env.BUILD_GIT_URL != 'null') {
+                git "${env.BUILD_GIT_URL}"
+							bat 'mvn clean package'
+					        } else {
+                                                        echo 'skipping the stage ${env.STAGE_NAME}.............................!'
+                                                        }							
+						} catch (err) {
+							echo err.getMessage()
+							unstable(message: "${STAGE_NAME} is unstable")
+							echo "Error detected, ${env.STAGE_NAME} failed..................!"
+						}
+				}							
+    }
+	 }
+     stage("deploy") {
+         steps {
+					script {
+						try {					
+						if (env.Deployment != 'null') 
+						{						
+	    deploy adapters: [tomcat8(credentialsId: 'Tomcat-QA', path: '', url: "${env.Deployment}")], contextPath: null, war: '**/*.war'
+	    
+					        } else {
+                                                        echo 'skipping the stage ${env.STAGE_NAME}.............................!'	    
+					}	} catch (err) {
+							echo err.getMessage()
+							unstable(message: "${STAGE_NAME} is unstable")
+							echo "Error detected, ${env.STAGE_NAME} failed..................!"
+						}		
+					}
+				}
+	}
+        stage('DAST') {
+            steps {
+                script {
+                    try {
+						if (env.DAST_IP != 'null') {		    
+                       arachniScanner checks: '*', format: 'html', url: "${env.DAST_URL}"
+					        } else {
+                                                       echo 'skipping the stage ${env.STAGE_NAME}.............................!'                           
+             }       } catch (err) {
+							echo err.getMessage()
+							unstable(message: "${STAGE_NAME} is unstable")
+							echo "Error detected, ${env.STAGE_NAME} failed..................!"                       
+                    }
+                }
+            }
+        }	
+        stage('Nexus') {
+            steps {
+                
+               bat '''mkdir test-reports
+               
+               cd test-reports	       
+               curl -T "C:/ProgramData/Jenkins/.jenkins/workspace/%JOB_NAME%/Shoppingcart/.scannerwork/report-task.txt" -u admin:flexib@3i -v http://10.251.16.167:8081/repository/Flexib-Reports-QA/sast-reports/
+	       curl -T "C:/ProgramData/Jenkins/.jenkins/workspace/%JOB_NAME%/arachni-report-html.zip" -u admin:flexib@3i -v http://10.251.16.167:8081/repository/Flexib-Reports-QA/DAST-REPORTS/
+ 
+               '''
+                           }
+        }              
+    }		
+ 	post {
+        // Clean after build
+        always {
+	mail to: "${env.EMAIL_ID}",
+        subject: "Status of pipeline: ${currentBuild.fullDisplayName}",
+        body: """Result is ${currentBuild.result}
+        
+		Please find build reports................................!
+		
+		Nexus Credentials-(username:admin,password:flexib@3i)
+		
+		SAST REPORTS
+		http://10.251.16.167:8081/repository/Flexib-Reports-QA/sast-reports/report-task.txt
+		https://sonarcloud.io/dashboard?id=Shoppingcart
+		--------------------------------------------------------------------------------------------------------------------------------------
+		DAST REPORTS
+		http://10.251.16.167:8081/repository/Flexib-Reports-QA/arachni-report-html-${BUILD_NUMBER}.zip
+		----------------------------------------------------------------------------------------------------------------------------------------
+		
+		
+		THE PIPELINE IS SUCCESSFULL AND THIS MAIL IS TO REQUEST FOR QA SIGNOFF AND PROCEED TO UAT 0R PROD ENV
+		
+		For more information please contact DEVSECOPS team...........!"""
+
+}
+}
+}
